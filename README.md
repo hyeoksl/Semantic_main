@@ -14,3 +14,12 @@ Set `dataset.train_dataset` and `dataset.valid_dataset` in the configuration to 
 The available models are `DeepJSCC_lite`, `DeepJSCC_lite_MLP`, and `DeepJSCC_lite_SwiGLU`, all with MSE loss. The latter two replace the decoder's first projection with a pointwise MLP or SwiGLU, respectively; select one with `model.type`. JPEG and other supported images are decoded as RGB with Pillow. The project does not require CompressAI, pynvml_utils, pytorch_model_summary, setproctitle, or turbojpeg.
 
 For each training batch, SNR in dB is sampled uniformly between `model.min_SNRdB` and `model.max_SNRdB`, and spp is sampled uniformly between `model.min_spp` and `model.spp`. The sampled spp is rounded to the nearest available complex-symbol channel count. Validation uses the midpoint SNR and maximum spp.
+
+Export the best checkpoint from an experiment directory and run an image through ONNX Runtime:
+
+```sh
+uv run export_onnx.py logs/BASELINE
+uv run run_inference.py BASELINE.onnx input.png --output reconstruction.png
+```
+
+The exporter reads the model settings from the experiment's `config.yaml` and writes `BASELINE.onnx` in the current directory. Nested paths below `logs/` are preserved in the output path. The ONNX model accepts float32 RGB images in NCHW format, scaled to [0, 1], with shape `(batch, 3, height, width)`. Inference runs at the original resolution, and the output is cropped to match the input dimensions when needed. SNR and spp are fixed at export time, defaulting to the validation midpoint SNR and maximum spp; use `--snr` and `--spp` to select other values. AWGN is sampled on every inference, so repeated reconstructions can differ. Re-export existing ONNX files to enable variable image dimensions.
