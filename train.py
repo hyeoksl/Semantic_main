@@ -10,8 +10,21 @@ from torchinfo import summary
 
 import model as jscc_models
 from criterion import *
+from einops import rearrange
+from model.layers import AWGNChannel
 from utils import load_dataloaders, getUsableGPUs,\
     progressMeter, logger_configuration, load_ckpt, save_ckpt, custom_arg_parsing
+
+
+def run_link(model, images, snr, spp):
+    symbols = model['encoder'](images, spp)
+    height, width = symbols.shape[-2:]
+    iq = rearrange(symbols, 'b (n iq) h w -> b (n h w) iq', iq=2)
+    received = AWGNChannel(torch.complex(iq[..., 0], iq[..., 1]), snr)
+    received = torch.stack((received.real, received.imag), dim=-1)
+    received = rearrange(received, 'b (n h w) iq -> b (n iq) h w', h=height, w=width)
+    return {'x_hat': model['decoder'](received, images.shape[-2], images.shape[-1]), 'y': symbols}
+
 
 def train_epoch(epoch, dataloader, model, criterion, clip_max_norm, optimizer, writer, logger,
                 min_snr, max_snr, min_spp, max_spp):
@@ -25,7 +38,7 @@ def train_epoch(epoch, dataloader, model, criterion, clip_max_norm, optimizer, w
         optimizer.zero_grad()
         snr = random.uniform(min_snr, max_snr)
         spp = random.uniform(min_spp, max_spp)
-        out_net = model(data, snr, spp)
+        out_net = run_link(model, data, snr, spp)
         loss_dict = criterion(out_net, data)
         loss_dict['loss'].backward()
         if clip_max_norm > 0:
@@ -51,7 +64,7 @@ def test_epoch(epoch, dataloader, model, criterion, writer, logger, snr, spp):
         for data in dataloader:
             data = data.to(next(model.parameters()).device)
             
-            out_net = model(data, snr, spp)
+            out_net = run_link(model, data, snr, spp)
             loss_dict = criterion(out_net, data, training=False)
             
             loss_dict['PSNR'] = 10 * torch.log10(1/loss_dict['MSE'])
@@ -90,30 +103,23 @@ def main(argv):
     train_writer = SummaryWriter(os.path.join(cfg_log.save_path, "train"))
     valid_writer = SummaryWriter(os.path.join(cfg_log.save_path, "valid"))
 
-    # Criterion
-    if issubclass(getattr(jscc_models, config.model.type), jscc_models.DeepJSCC_lite):
-        criterion = CustomJSCCLoss(loss_type=config.loss_type)
-    else:
-        raise ValueError(f'Unsupported model type: {config.model.type}')
-    
-    # Model
+    criterion = CustomJSCCLoss(loss_type=config.loss_type)
+
     cfg_model = config.model
     min_snr, max_snr = cfg_model.min_SNRdB, cfg_model.max_SNRdB
     min_spp, max_spp = cfg_model.min_spp, cfg_model.spp
     if min_snr > max_snr or not 0 < min_spp <= max_spp:
         raise ValueError('Require min_SNRdB <= max_SNRdB and 0 < min_spp <= spp')
-    model_class = getattr(jscc_models, cfg_model.type)
-    del cfg_model.type
-    model = model_class(**cfg_model).to(device)
+    model = torch.nn.ModuleDict({
+        'encoder': jscc_models.DeepJSCCEncoder(spp=max_spp, dim=cfg_model.dim),
+        'decoder': jscc_models.DeepJSCCDecoder(spp=max_spp, dim=cfg_model.dim),
+    }).to(device)
     with torch.random.fork_rng(devices=[device] if device.type == 'cuda' else []):
-        model_summary = summary(
-            model,
-            input_data=(torch.zeros(1, 3, 256, 256, device=device), (min_snr + max_snr) / 2, max_spp),
-            depth=1,
-            verbose=0,
-        )
-    logger.info('Model summary:\n%s', model_summary)
-    
+        example = torch.zeros(1, 3, 256, 256, device=device)
+        logger.info('Encoder summary:\n%s', summary(model['encoder'], input_data=(example, max_spp), depth=1, verbose=0))
+        symbols = model['encoder'](example, max_spp)
+        logger.info('Decoder summary:\n%s', summary(model['decoder'], input_data=(symbols, 256, 256), depth=1, verbose=0))
+
     # Dataset
     cfg_dataset = config.dataset
     train_dl, valid_dl = load_dataloaders(**cfg_dataset)

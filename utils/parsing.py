@@ -1,6 +1,5 @@
 import argparse
 import yaml
-import model
 from jsonargparse import ArgumentParser, ActionConfigFile
 
 __all__ = ['custom_arg_parsing']
@@ -25,11 +24,9 @@ def custom_arg_parsing(argv):
             model_type = None
     if model_type is None:
         raise AssertionError("Argument model.type should be sepcified!!")
-    try:
-        model_class = getattr(model, model_type)
-    except:
+    if model_type != 'DeepJSCC_lite':
         raise NameError(f"Model type '{model_type}' is invalid! (Not implemented)")
-    
+
     parser = ArgumentParser()
     parser.add_argument('--config_file', action=ActionConfigFile, help='path to the yaml file containing params')
     parser.add_argument('--use_cpu', action='store_true', help='Not to use GPU')
@@ -58,7 +55,11 @@ def custom_arg_parsing(argv):
     parser.add_argument('--logging.pretrain_ckpt', type=str, default=None)
 
     parser.add_argument('--model.type', type=str)
-    parser = model_class.get_parser(parser)
+    parser.add_argument('--model.min_SNRdB', type=float)
+    parser.add_argument('--model.max_SNRdB', type=float)
+    parser.add_argument('--model.spp', type=float)
+    parser.add_argument('--model.min_spp', type=float)
+    parser.add_argument('--model.dim', type=int)
 
     args = parser.parse_args(argv)
     return args

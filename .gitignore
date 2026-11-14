@@ -3,6 +3,7 @@
 *logging.log
 *.pth.tar
 built.txt
+*.onnx
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
